@@ -1,3 +1,8 @@
+//KQL query to check for default outbound access on Azure virtual machine nics
+//Written by Alan Kinane 21/02/2024
+
+//Disclaimer: I do not assume any responsibility for the accuracy of the results obtained from using this query. This query is provided solely as a tool to assist in identifying instances where default outbound access is in use.  Please use the information obtained from this query at your own discretion and risk.
+
 // Selecting all network interfaces
 resources
 | where type == "microsoft.network/networkinterfaces"
