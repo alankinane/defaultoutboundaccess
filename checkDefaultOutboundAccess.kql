@@ -1,0 +1,73 @@
+// Selecting all network interfaces
+resources
+| where type == "microsoft.network/networkinterfaces"
+
+// Expand each network interface's IP configurations
+| mv-expand ipconfig = properties.ipConfigurations
+
+// Expand each backend pool associated with the IP configurations
+| mv-expand backendPool = ipconfig.properties.loadBalancerBackendAddressPools
+
+// Extracting relevant information and filtering for network interfaces associated with virtual machines
+| extend backendPoolId = tostring(backendPool.id)
+| where isnotempty(properties.virtualMachine)
+| extend vmIdArray = split(properties.virtualMachine, "/")
+| extend vmName = tostring(vmIdArray[-1])
+| extend virtualMachine = substring(vmName, 0, strlen(vmName) - 2)
+| extend subnetArray = split(tostring(ipconfig.properties.subnet), "/")
+| extend virtualNetwork = tostring(subnetArray[8])
+| extend subnetName = tostring(ipconfig.properties.subnet)
+| extend subnet = tostring(subnetArray[10])
+| extend subnet = substring(subnet, 0, strlen(subnet) - 2)
+| extend pipArray = split(tostring(ipconfig.properties.publicIPAddress.id), "/")
+| extend publicIp = tostring(pipArray[8])
+| extend publicIp = iff(isnotempty(publicIp), "Yes", "No")
+
+// Projecting relevant columns for network interfaces
+| project id, resourceGroup, nicName = name, virtualMachine, virtualNetwork, subnetName, subnet, publicIp, backendPoolId
+
+// Left outer join with load balancers to check if a network interface is associated with a load balancer
+| join kind=leftouter (
+    resources
+    | where type == "microsoft.network/loadbalancers"
+    | mv-expand backendPools = properties.backendAddressPools
+    | extend hasPublicIpConfig = iff(isnotempty(properties.frontendIPConfigurations), "Yes", "No")
+    | where hasPublicIpConfig == "Yes"
+    | project lbName = name, backendPoolId = tostring(backendPools.id)
+) on backendPoolId
+| extend loadBalancer = iff(isnotempty(lbName), "Yes", "No")
+
+// Left outer join with NAT gateways to check if a network interface is associated with a NAT gateway
+| join kind=leftouter (
+    resources
+    | where type == "microsoft.network/natgateways"
+    | where array_length(properties['subnets']) > 0
+    | mv-expand subnetName = properties.subnets
+    | extend subnetName = tostring(subnetName)
+    | project subnetName, natGwName = name
+) on subnetName
+| extend natGateway = iff(isnotempty(natGwName), "Yes", "No")
+
+// Left outer join with route tables to check if a network interface has a default route to a virtual appliance
+| join kind=leftouter (
+    resources
+    | where type == "microsoft.network/routetables"
+    | mv-expand rules = properties.routes    
+    | extend addressPrefix = tostring(rules.properties.addressPrefix)
+    | extend nextHopType = tostring(rules.properties.nextHopType)
+    | extend nextHopIpAddress = tostring(rules.properties.nextHopIpAddress)    
+    | mv-expand subnetName = properties.subnets
+    | extend subnetName = tostring(subnetName)
+    | extend nextHopIpAddress = tostring(rules.properties.nextHopIpAddress)
+    | where addressPrefix == "0.0.0.0/0"
+    | where nextHopType == "VirtualAppliance"
+    | project subnetName, nextHopIpAddress
+) on subnetName
+| extend defaultRouteisNVA = iff(isnotempty(nextHopIpAddress), "Yes", "No")
+
+// Determining if a network interface has default outbound access
+| extend defaultOutboundAccess = iff(publicIp == "No" and loadBalancer == "No" and natGateway == "No" and defaultRouteisNVA == "No", "Yes", "No")
+
+// Final projection of columns and ordering by default outbound access status
+| project id, resourceGroup, nicName, virtualMachine, virtualNetwork, subnet, publicIp, loadBalancer, natGateway, defaultRouteisNVA, defaultOutboundAccess
+| order by defaultOutboundAccess
