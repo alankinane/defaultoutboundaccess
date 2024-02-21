@@ -1,0 +1,23 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "// Selecting all network interfaces\r\nresources\r\n| where type == \"microsoft.network/networkinterfaces\"\r\n \r\n// Expand each network interface's IP configurations\r\n| mv-expand ipconfig = properties.ipConfigurations\r\n \r\n// Expand each backend pool associated with the IP configurations\r\n| mv-expand backendPool = ipconfig.properties.loadBalancerBackendAddressPools\r\n \r\n// Extracting relevant information and filtering for network interfaces associated with virtual machines\r\n| extend backendPoolId = tostring(backendPool.id)\r\n| where isnotempty(properties.virtualMachine)\r\n| extend vmIdArray = split(properties.virtualMachine, \"/\")\r\n| extend vmName = tostring(vmIdArray[-1])\r\n| extend virtualMachine = substring(vmName, 0, strlen(vmName) - 2)\r\n| extend subnetArray = split(tostring(ipconfig.properties.subnet), \"/\")\r\n| extend virtualNetwork = tostring(subnetArray[8])\r\n| extend subnetName = tostring(ipconfig.properties.subnet)\r\n| extend subnet = tostring(subnetArray[10])\r\n| extend subnet = substring(subnet, 0, strlen(subnet) - 2)\r\n| extend pipArray = split(tostring(ipconfig.properties.publicIPAddress.id), \"/\")\r\n| extend publicIp = tostring(pipArray[8])\r\n| extend publicIp = iff(isnotempty(publicIp), \"Yes\", \"No\")\r\n \r\n// Projecting relevant columns for network interfaces\r\n| project id, resourceGroup, nicName = name, virtualMachine, virtualNetwork, subnetName, subnet, publicIp, backendPoolId\r\n \r\n// Left outer join with load balancers to check if a network interface is associated with a load balancer\r\n| join kind=leftouter (\r\n    resources\r\n    | where type == \"microsoft.network/loadbalancers\"\r\n    | mv-expand backendPools = properties.backendAddressPools\r\n    | extend hasPublicIpConfig = iff(isnotempty(properties.frontendIPConfigurations), \"Yes\", \"No\")\r\n    | where hasPublicIpConfig == \"Yes\"\r\n    | project lbName = name, backendPoolId = tostring(backendPools.id)\r\n) on backendPoolId\r\n| extend loadBalancer = iff(isnotempty(lbName), \"Yes\", \"No\")\r\n \r\n// Left outer join with NAT gateways to check if a network interface is associated with a NAT gateway\r\n| join kind=leftouter (\r\n    resources\r\n    | where type == \"microsoft.network/natgateways\"\r\n    | where array_length(properties['subnets']) > 0\r\n    | mv-expand subnetName = properties.subnets\r\n    | extend subnetName = tostring(subnetName)\r\n    | project subnetName, natGwName = name\r\n) on subnetName\r\n| extend natGateway = iff(isnotempty(natGwName), \"Yes\", \"No\")\r\n \r\n// Left outer join with route tables to check if a network interface has a default route to a virtual appliance\r\n| join kind=leftouter (\r\n    resources\r\n    | where type == \"microsoft.network/routetables\"\r\n    | mv-expand rules = properties.routes    \r\n    | extend addressPrefix = tostring(rules.properties.addressPrefix)\r\n    | extend nextHopType = tostring(rules.properties.nextHopType)\r\n    | extend nextHopIpAddress = tostring(rules.properties.nextHopIpAddress)    \r\n    | mv-expand subnetName = properties.subnets\r\n    | extend subnetName = tostring(subnetName)\r\n    | extend nextHopIpAddress = tostring(rules.properties.nextHopIpAddress)\r\n    | where addressPrefix == \"0.0.0.0/0\"\r\n    | where nextHopType == \"VirtualAppliance\"\r\n    | project subnetName, nextHopIpAddress\r\n) on subnetName\r\n| extend defaultRouteisNVA = iff(isnotempty(nextHopIpAddress), \"Yes\", \"No\")\r\n \r\n// Determining if a network interface has default outbound access\r\n| extend defaultOutboundAccess = iff(publicIp == \"No\" and loadBalancer == \"No\" and natGateway == \"No\" and defaultRouteisNVA == \"No\", \"Yes\", \"No\")\r\n \r\n// Final projection of columns and ordering by default outbound access status\r\n| project id, resourceGroup, nicName, virtualMachine, virtualNetwork, subnet, publicIp, loadBalancer, natGateway, defaultRouteisNVA, defaultOutboundAccess\r\n| order by defaultOutboundAccess",
+        "size": 0,
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "crossComponentResources": [
+          "value::all"
+        ]
+      },
+      "name": "query - 0"
+    }
+  ],
+  "fallbackResourceIds": [
+    "azure monitor"
+  ],
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}
